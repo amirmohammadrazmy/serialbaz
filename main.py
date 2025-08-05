@@ -169,7 +169,9 @@ flask_app = Flask(__name__)
 @flask_app.route(f"/{BOT_TOKEN}", methods=["POST"])
 async def webhook_handler():
     """Handle incoming updates from Telegram."""
-    update = Update.de_json(await request.get_json(), telegram_bot)
+    # request.get_json() is not an async function, so we don't await it.
+    update_data = request.get_json()
+    update = Update.de_json(update_data, telegram_bot)
     await application.process_update(update)
     return {"ok": True}
 
