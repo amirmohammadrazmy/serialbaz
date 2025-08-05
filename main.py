@@ -23,29 +23,49 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "Welcome to the Series Downloader Bot!\n\n"
         "Please send me a text file with download links to get started.\n"
-        "The links should be in the format: "
-        "host.com/DonyayeSerial/series/{SeriesName}/Soft.Sub/S{Season}/{Quality}/{Episode}"
+        "The links should be in the format:\n"
+        "download_link | info_link\n\n"
+        "For example:\n"
+        "https://2ad.ir/L9SfXRk | https://.../Young.Justice/Soft.Sub/S04/\n"
+        "or\n"
+        "https://2ad.ir/L9SfXRk | https://.../Young.Justice/Soft.Sub/S04/480p/E01.mkv"
     )
 
 def parse_links(text: str) -> dict:
     """Parses the text and extracts series info."""
     series_data = {}
-    # Regex to capture SeriesName, Season, and Episode
-    pattern = re.compile(r"series/([^/]+)/Soft\.Sub/S(\d+)/[^/]+/([E|e]\d+)")
+    episode_pattern = re.compile(r"series/([^/]+)/Soft\.Sub/S(\d+)/[^/]+/([E|e]\d+)")
+    season_pattern = re.compile(r"series/([^/]+)/Soft\.Sub/S(\d+)")
 
     for line in text.splitlines():
-        match = pattern.search(line)
-        if match:
-            series_name = match.group(1)
-            season = f"S{match.group(2)}"
-            episode = match.group(3).upper()
+        parts = line.split('|')
+        if len(parts) != 2:
+            continue
+
+        download_link = parts[0].strip()
+        info_link = parts[1].strip()
+
+        episode_match = episode_pattern.search(info_link)
+        if episode_match:
+            series_name = episode_match.group(1)
+            season = f"S{episode_match.group(2)}"
+            episode = episode_match.group(3).upper()
 
             if series_name not in series_data:
                 series_data[series_name] = {}
             if season not in series_data[series_name]:
                 series_data[series_name][season] = {}
-            if episode not in series_data[series_name][season]:
-                series_data[series_name][season][episode] = line
+            series_data[series_name][season][episode] = download_link
+            continue
+
+        season_match = season_pattern.search(info_link)
+        if season_match:
+            series_name = season_match.group(1)
+            season = f"S{season_match.group(2)}"
+
+            if series_name not in series_data:
+                series_data[series_name] = {}
+            series_data[series_name][season] = download_link
 
     return series_data
 
@@ -97,15 +117,22 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     elif callback_data.startswith("season_"):
         season = callback_data.split("_", 1)[1]
         series_name = context.user_data.get('selected_series')
+        season_data = series_data.get(series_name, {}).get(season, {})
 
-        episodes = sorted(series_data.get(series_name, {}).get(season, {}).keys())
-        keyboard = []
-        for episode in episodes:
-            button = InlineKeyboardButton(episode, callback_data=f"episode_{season}_{episode}")
-            keyboard.append([button])
+        if isinstance(season_data, dict): # It has episodes
+            episodes = sorted(season_data.keys())
+            keyboard = []
+            for episode in episodes:
+                button = InlineKeyboardButton(episode, callback_data=f"episode_{season}_{episode}")
+                keyboard.append([button])
 
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(text=f"Selected Season: {season}\nPlease choose an episode:", reply_markup=reply_markup)
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(text=f"Selected Season: {season}\nPlease choose an episode:", reply_markup=reply_markup)
+        else: # It's a direct download link
+            link = season_data
+            keyboard = [[InlineKeyboardButton("Download Season", url=link)]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(text=f"Download link for {series_name} {season}:", reply_markup=reply_markup)
 
     elif callback_data.startswith("episode_"):
         _, season, episode = callback_data.split("_", 2)
