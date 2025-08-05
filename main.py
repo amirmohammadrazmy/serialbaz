@@ -4,8 +4,7 @@ import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackQueryHandler, ContextTypes
 import re
-from flask import Flask, request
-from asgiref.wsgi import WsgiToAsgi
+from quart import Quart, request
 
 # --- Logging Setup ---
 logging.basicConfig(
@@ -52,15 +51,17 @@ def load_series_data() -> dict:
 
 # --- Telegram Bot Application Setup ---
 application = Application.builder().token(BOT_TOKEN).build()
+app = Quart(__name__) # Our new, native ASGI web framework
 
-async def setup_bot():
-    """Initializes the bot, loads data, and registers handlers."""
+@app.before_serving
+async def startup():
+    """This function runs once before the server starts, and it's the correct way in Quart."""
     await application.initialize()
     application.bot_data['series_data'] = load_series_data()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_search))
     application.add_handler(CallbackQueryHandler(button_callback))
-    logger.info("Bot application initialized and handlers registered.")
+    logger.info("Bot application initialized and handlers registered using Quart.")
 
 # --- Telegram Bot Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -86,7 +87,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     series_data = context.bot_data.get('series_data', {})
     action, value = callback_data.split("_", 1)
 
-    # A simple state machine using user_data
     if action == "srs":
         context.user_data['series_name'] = value
         seasons = sorted(series_data.get(value, {}).keys())
@@ -124,17 +124,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         else:
             await query.edit_message_text("خطا: لینک یافت نشد.")
 
-# --- Web Server and Bot Integration ---
-flask_app = Flask(__name__)
-
-@flask_app.route(f"/{BOT_TOKEN}", methods=["POST"])
+# --- Webhook Handler ---
+@app.route(f"/{BOT_TOKEN}", methods=["POST"])
 async def webhook_handler():
-    update = Update.de_json(request.get_json(), application.bot)
+    """Handles incoming updates from Telegram by passing them to the bot application."""
+    update_data = await request.get_json()
+    update = Update.de_json(update_data, application.bot)
     await application.process_update(update)
     return {"ok": True}
 
-# Run the async setup function before defining the ASGI app
-asyncio.run(setup_bot())
-
-# The final object Uvicorn will run
-app = WsgiToAsgi(flask_app)
+# The Uvicorn command `uvicorn main:app` will find the `app` object in this file.
+# There is no need for a `if __name__ == "__main__":` block.
