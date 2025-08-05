@@ -2,3 +2,4 @@ python-telegram-bot[ext]
 Flask[async]
 gunicorn
 uvicorn
+asgiref
