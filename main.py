@@ -15,60 +15,52 @@ logger = logging.getLogger(__name__)
 
 # --- Constants ---
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-PORT = int(os.environ.get('PORT', 8000))
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
+if not BOT_TOKEN:
+    logger.fatal("FATAL: BOT_TOKEN environment variable is not set.")
+    exit()
 
 # --- Data Loading and Parsing ---
 def parse_links(text: str) -> dict:
-    """Parses text from links.txt into a nested dictionary."""
     series_data = {}
     pattern = re.compile(
         r"series/([^/]+)/Soft\.Sub/S(\d+)(?:/([^/]+))?(?:/([E|e]\d+))?"
     )
-
     for line in text.splitlines():
         parts = line.split('|')
-        if len(parts) != 2:
-            continue
-
-        download_link = parts[0].strip()
-        info_link = parts[1].strip()
+        if len(parts) != 2: continue
+        download_link, info_link = parts[0].strip(), parts[1].strip()
         match = pattern.search(info_link)
-
         if match:
             series_name = match.group(1).replace('.', ' ').title()
             season = f"S{match.group(2)}"
             quality = match.group(3) if match.group(3) else "Standard"
             episode = match.group(4).upper() if match.group(4) else None
-
-            series_data.setdefault(series_name, {})
-            series_data[series_name].setdefault(season, {})
-
+            series_data.setdefault(series_name, {}).setdefault(season, {})
             if episode:
-                series_data[series_name][season].setdefault(quality, {})
-                series_data[series_name][season][quality][episode] = download_link
-            else:
-                if quality not in series_data[series_name][season]:
-                    series_data[series_name][season][quality] = download_link
+                series_data[series_name][season].setdefault(quality, {})[episode] = download_link
+            elif quality not in series_data[series_name][season]:
+                series_data[series_name][season][quality] = download_link
     return series_data
 
 def load_series_data() -> dict:
-    """Loads and parses the links.txt file."""
     try:
         with open("links.txt", "r", encoding="utf-8") as f:
-            text = f.read()
-            return parse_links(text)
+            return parse_links(f.read())
     except FileNotFoundError:
-        # This is a critical error, we log it. The bot can't function without it.
         logger.error("CRITICAL: links.txt not found! The bot will not have any data.")
         return {}
 
-# --- Telegram Bot Application Initialization ---
-if not BOT_TOKEN:
-    logger.fatal("FATAL: BOT_TOKEN environment variable is not set.")
-    exit()
-
+# --- Telegram Bot Application Setup ---
 application = Application.builder().token(BOT_TOKEN).build()
+
+async def setup_bot():
+    """Initializes the bot, loads data, and registers handlers."""
+    await application.initialize()
+    application.bot_data['series_data'] = load_series_data()
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_search))
+    application.add_handler(CallbackQueryHandler(button_callback))
+    logger.info("Bot application initialized and handlers registered.")
 
 # --- Telegram Bot Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -78,7 +70,7 @@ async def handle_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     query = update.message.text.lower()
     series_data = context.bot_data.get('series_data', {})
     if not series_data:
-        await update.message.reply_text("خطا: داده‌های سریال بارگذاری نشده است. لطفا با ادمین تماس بگیرید.")
+        await update.message.reply_text("خطا: داده‌های سریال یافت نشد. لطفا وجود فایل links.txt را در سرور بررسی کنید.")
         return
     matches = {name: data for name, data in series_data.items() if query in name.lower()}
     if not matches:
@@ -94,6 +86,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     series_data = context.bot_data.get('series_data', {})
     action, value = callback_data.split("_", 1)
 
+    # A simple state machine using user_data
     if action == "srs":
         context.user_data['series_name'] = value
         seasons = sorted(series_data.get(value, {}).keys())
@@ -131,23 +124,17 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         else:
             await query.edit_message_text("خطا: لینک یافت نشد.")
 
-# --- Flask Web Server and Bot Setup ---
+# --- Web Server and Bot Integration ---
 flask_app = Flask(__name__)
-app = WsgiToAsgi(flask_app)  # The ASGI wrapper for Uvicorn
-
-@flask_app.before_serving
-async def startup():
-    """This function runs once before the server starts."""
-    await application.initialize()
-    application.bot_data['series_data'] = load_series_data()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_search))
-    application.add_handler(CallbackQueryHandler(button_callback))
-    logger.info("Bot application initialized and handlers registered.")
 
 @flask_app.route(f"/{BOT_TOKEN}", methods=["POST"])
 async def webhook_handler():
-    """Handle incoming updates from Telegram."""
     update = Update.de_json(request.get_json(), application.bot)
     await application.process_update(update)
     return {"ok": True}
+
+# Run the async setup function before defining the ASGI app
+asyncio.run(setup_bot())
+
+# The final object Uvicorn will run
+app = WsgiToAsgi(flask_app)
